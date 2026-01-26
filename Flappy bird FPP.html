@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D First-Person Flappy Bird - Optimized</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: #87CEEB;
+            font-family: Arial, sans-serif;
+        }
+        
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 100;
+            color: white;
+            font-size: 24px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        }
+        
+        #gameOver {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 200;
+            color: white;
+            text-align: center;
+            font-size: 32px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            display: none;
+        }
+        
+        #instructions {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 100;
+            color: white;
+            text-align: center;
+            font-size: 18px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div>Score: <span id="score">0</span></div>
+        <div>High Score: <span id="highScore">0</span></div>
+    </div>
+    
+    <div id="gameOver">
+        <div>Game Over!</div>
+        <div style="font-size: 20px; margin-top: 10px;">Click to restart</div>
+    </div>
+    
+    <div id="instructions">
+        Click or press SPACE to fly up - Navigate through the pipes!
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        class FlappyBird3D {
+            constructor() {
+                // Core setup
+                this.scene = new THREE.Scene();
+                this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                this.renderer = new THREE.WebGLRenderer({ antialias: true });
+                
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.setClearColor(0x87CEEB);
+                this.scene.fog = new THREE.Fog(0x87CEEB, 60, 250);
+                document.body.appendChild(this.renderer.domElement);
+                
+                // Shared geometries for performance optimization
+                this.sharedGeometries = {
+                    largeSphere: new THREE.SphereGeometry(10, 8, 6),
+                    mediumSphere: new THREE.SphereGeometry(7, 6, 5),
+                    smallSphere: new THREE.SphereGeometry(4, 5, 4),
+                    pipeBody: new THREE.CylinderGeometry(3.5, 3.5, 1, 16),
+                    pipeCap: new THREE.CylinderGeometry(4.5, 4.5, 2.5, 16),
+                    pipeRing: new THREE.CylinderGeometry(3.8, 3.8, 0.8, 16)
+                };
+                
+                // Shared materials for performance optimization
+                this.sharedMaterials = {
+                    ceilingClouds: [
+                        new THREE.MeshLambertMaterial({ color: 0xf8f8f8, transparent: true, opacity: 0.4 }),
+                        new THREE.MeshLambertMaterial({ color: 0xf0f0f0, transparent: true, opacity: 0.35 }),
+                        new THREE.MeshLambertMaterial({ color: 0xe8e8e8, transparent: true, opacity: 0.3 })
+                    ],
+                    floorClouds: [
+                        new THREE.MeshLambertMaterial({ color: 0xe0e0e0, transparent: true, opacity: 0.4 }),
+                        new THREE.MeshLambertMaterial({ color: 0xd8d8d8, transparent: true, opacity: 0.35 }),
+                        new THREE.MeshLambertMaterial({ color: 0xd0d0d0, transparent: true, opacity: 0.3 })
+                    ],
+                    fog: new THREE.MeshLambertMaterial({ color: 0xf5f5f5, transparent: true, opacity: 0.2 }),
+                    pipe: new THREE.MeshPhongMaterial({ color: 0x1a5d1a, shininess: 30, specular: 0x111111 }),
+                    pipeCap: new THREE.MeshPhongMaterial({ color: 0x0d2d0d, shininess: 20, specular: 0x222222 }),
+                    pipeRing: new THREE.MeshPhongMaterial({ color: 0x0f3f0f, shininess: 25, specular: 0x111111 })
+                };
+                
+                // Game state
+                this.reset();
+                this.highScore = 0;
+                
+                this.init();
+                this.setupControls();
+                this.gameLoop();
+                
+                // Handle window resize
+                window.addEventListener('resize', () => this.onWindowResize());
+            }
+            
+            reset() {
+                this.playerPos = new THREE.Vector3(0, 0, 0);
+                this.velocity = 0;
+                this.forwardSpeed = 0.8;
+                this.gravity = -0.018;
+                this.jumpForce = 0.45;
+                this.score = 0;
+                this.gameRunning = true;
+                this.pipes = [];
+                this.clouds = [];
+                this.pipeDistance = 40;
+                this.pipeGap = 16;
+            }
+            
+            init() {
+                // Clear scene efficiently
+                while(this.scene.children.length > 0) {
+                    const child = this.scene.children[0];
+                    this.scene.remove(child);
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) {
+                        if (Array.isArray(child.material)) {
+                            child.material.forEach(mat => mat.dispose());
+                        } else {
+                            child.material.dispose();
+                        }
+                    }
+                }
+                
+                // Reset arrays
+                this.pipes = [];
+                this.clouds = [];
+                
+                // Enhanced lighting for realism
+                this.scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+                const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                dirLight.position.set(-30, 50, 30);
+                dirLight.castShadow = true;
+                this.scene.add(dirLight);
+                
+                const hemiLight = new THREE.HemisphereLight(0x87CEEB, 0xffffff, 0.4);
+                this.scene.add(hemiLight);
+                
+                // Create realistic environment
+                this.createOptimizedClouds();
+                for (let i = 1; i <= 6; i++) {
+                    this.createOptimizedPipe(i * this.pipeDistance);
+                }
+                
+                // Update UI
+                document.getElementById('score').textContent = this.score;
+                document.getElementById('highScore').textContent = this.highScore;
+                document.getElementById('gameOver').style.display = 'none';
+            }
+            
+            createOptimizedClouds() {
+                // Seamless cloud coverage - no gaps, optimized spacing
+                for (let z = -50; z < 400; z += 12) {
+                    for (let x = -80; x < 80; x += 12) {
+                        this.createOptimizedCloudCluster(x, z, 28, true);  // Ceiling
+                        this.createOptimizedCloudCluster(x, z, -28, false); // Floor
+                        
+                        // Add atmospheric fog more frequently
+                        if (Math.random() > 0.4) {
+                            this.createOptimizedFogSphere(x, z);
+                        }
+                    }
+                }
+            }
+            
+            createOptimizedCloudCluster(x, z, baseY, isCeiling) {
+                const offsetY = isCeiling ? 1 : -1;
+                const materials = isCeiling ? this.sharedMaterials.ceilingClouds : this.sharedMaterials.floorClouds;
+                
+                // Primary elongated cloud - stretched horizontally
+                const primaryCloud = new THREE.Mesh(
+                    this.sharedGeometries.largeSphere, 
+                    materials[Math.floor(Math.random() * materials.length)]
+                );
+                primaryCloud.position.set(
+                    x + (Math.random() - 0.5) * 8,
+                    baseY + offsetY * Math.random() * 3,
+                    z + (Math.random() - 0.5) * 8
+                );
+                primaryCloud.scale.set(
+                    1.8 + Math.random() * 0.8,  // Much longer horizontally
+                    0.25 + Math.random() * 0.15, // Flatter vertically
+                    1.4 + Math.random() * 0.6   // Extended depth
+                );
+                this.clouds.push(primaryCloud);
+                this.scene.add(primaryCloud);
+                
+                // Multiple overlapping medium clouds for seamless coverage
+                for (let i = 0; i < 3; i++) {
+                    const secondaryCloud = new THREE.Mesh(
+                        this.sharedGeometries.mediumSphere,
+                        materials[Math.floor(Math.random() * materials.length)]
+                    );
+                    secondaryCloud.position.set(
+                        x + (Math.random() - 0.5) * 10,
+                        baseY + offsetY * (1 + Math.random() * 2),
+                        z + (Math.random() - 0.5) * 10
+                    );
+                    secondaryCloud.scale.set(
+                        1.4 + Math.random() * 0.6,  // Elongated
+                        0.2 + Math.random() * 0.1,  // Very flat
+                        1.2 + Math.random() * 0.5   // Extended
+                    );
+                    this.clouds.push(secondaryCloud);
+                    this.scene.add(secondaryCloud);
+                }
+                
+                // Fill gaps with small clouds
+                for (let i = 0; i < 2; i++) {
+                    const detailCloud = new THREE.Mesh(this.sharedGeometries.smallSphere, materials[2]);
+                    detailCloud.position.set(
+                        x + (Math.random() - 0.5) * 12,
+                        baseY + offsetY * Math.random() * 1.5,
+                        z + (Math.random() - 0.5) * 12
+                    );
+                    detailCloud.scale.set(
+                        1.2 + Math.random() * 0.4,  // Stretched
+                        0.15 + Math.random() * 0.08, // Very thin
+                        1.0 + Math.random() * 0.4   // Extended
+                    );
+                    this.clouds.push(detailCloud);
+                    this.scene.add(detailCloud);
+                }
+            }
+            
+            createOptimizedFogSphere(x, z) {
+                const fogSphere = new THREE.Mesh(this.sharedGeometries.smallSphere, this.sharedMaterials.fog);
+                fogSphere.position.set(
+                    x + (Math.random() - 0.5) * 15,
+                    (Math.random() - 0.5) * 15,
+                    z + (Math.random() - 0.5) * 15
+                );
+                fogSphere.scale.set(
+                    2.0 + Math.random() * 1.0,   // Much longer
+                    0.2 + Math.random() * 0.1,   // Very flat fog layer
+                    1.8 + Math.random() * 0.8    // Extended depth
+                );
+                this.clouds.push(fogSphere);
+                this.scene.add(fogSphere);
+            }
+            
+            createOptimizedPipe(z) {
+                const pipeGroup = new THREE.Group();
+                const gapCenter = (Math.random() - 0.5) * 12;
+                const halfGap = this.pipeGap / 2;
+                
+                // Upper pipe
+                const upperHeight = 25 - (gapCenter + halfGap);
+                if (upperHeight > 0) {
+                    this.createOptimizedPipeSection(pipeGroup, upperHeight, gapCenter + halfGap, true);
+                }
+                
+                // Lower pipe
+                const lowerHeight = 25 + (gapCenter - halfGap);
+                if (lowerHeight > 0) {
+                    this.createOptimizedPipeSection(pipeGroup, lowerHeight, gapCenter - halfGap, false);
+                }
+                
+                pipeGroup.position.z = z;
+                pipeGroup.userData = { scored: false, gapCenter, halfGap };
+                
+                this.pipes.push(pipeGroup);
+                this.scene.add(pipeGroup);
+            }
+            
+            createOptimizedPipeSection(pipeGroup, height, gapEdge, isUpper) {
+                const direction = isUpper ? 1 : -1;
+                const pipeY = gapEdge + direction * height / 2;
+                
+                // Main pipe body - scaled geometry for height
+                const pipe = new THREE.Mesh(this.sharedGeometries.pipeBody, this.sharedMaterials.pipe);
+                pipe.position.y = pipeY;
+                pipe.scale.y = height;
+                pipeGroup.add(pipe);
+                
+                // Pipe cap (darker) - reuse geometry
+                const cap = new THREE.Mesh(this.sharedGeometries.pipeCap, this.sharedMaterials.pipeCap);
+                cap.position.y = gapEdge - direction * 1.25;
+                pipeGroup.add(cap);
+                
+                // Two decorative rings on the pipe - reuse geometry
+                const ring1 = new THREE.Mesh(this.sharedGeometries.pipeRing, this.sharedMaterials.pipeRing);
+                ring1.position.y = pipeY + direction * height * 0.25;
+                pipeGroup.add(ring1);
+                
+                const ring2 = new THREE.Mesh(this.sharedGeometries.pipeRing, this.sharedMaterials.pipeRing);
+                ring2.position.y = pipeY - direction * height * 0.25;
+                pipeGroup.add(ring2);
+            }
+            
+            setupControls() {
+                const jump = () => {
+                    if (this.gameRunning) {
+                        this.velocity = this.jumpForce;
+                    } else {
+                        this.restart();
+                    }
+                };
+                
+                document.addEventListener('click', jump);
+                document.addEventListener('keydown', (e) => {
+                    if (e.code === 'Space') {
+                        e.preventDefault();
+                        jump();
+                    }
+                });
+            }
+            
+            update() {
+                if (!this.gameRunning) return;
+                
+                // Physics
+                this.velocity += this.gravity;
+                this.playerPos.y += this.velocity;
+                this.playerPos.z += this.forwardSpeed;
+                
+                // Camera follows player
+                this.camera.position.copy(this.playerPos);
+                this.camera.lookAt(
+                    this.playerPos.x, 
+                    this.playerPos.y, 
+                    this.playerPos.z + 50
+                );
+                
+                // Update pipes with optimized loop
+                for (let i = this.pipes.length - 1; i >= 0; i--) {
+                    const pipe = this.pipes[i];
+                    
+                    // Score when passing pipe
+                    if (!pipe.userData.scored && pipe.position.z < this.playerPos.z) {
+                        pipe.userData.scored = true;
+                        this.score++;
+                        document.getElementById('score').textContent = this.score;
+                    }
+                    
+                    // Remove old pipes
+                    if (pipe.position.z < this.playerPos.z - 60) {
+                        this.scene.remove(pipe);
+                        this.pipes.splice(i, 1);
+                    }
+                }
+                
+                // Add new pipes
+                if (this.pipes.length < 6) {
+                    const maxZ = Math.max(...this.pipes.map(p => p.position.z), this.playerPos.z);
+                    this.createOptimizedPipe(maxZ + this.pipeDistance);
+                }
+                
+                // Generate new clouds efficiently
+                this.updateOptimizedClouds();
+                
+                // Collision detection
+                this.checkCollisions();
+                
+                // Boundary check
+                if (this.playerPos.y > 30 || this.playerPos.y < -30) {
+                    this.gameOver();
+                }
+            }
+            
+            updateOptimizedClouds() {
+                // Remove old clouds efficiently - reverse loop for safe removal
+                for (let i = this.clouds.length - 1; i >= 0; i--) {
+                    const cloud = this.clouds[i];
+                    if (cloud.position.z < this.playerPos.z - 80) {
+                        this.scene.remove(cloud);
+                        this.clouds.splice(i, 1);
+                    }
+                }
+                
+                // Add new cloud sections ahead - check more efficiently
+                const needClouds = this.clouds.filter(c => c.position.z > this.playerPos.z + 200).length < 40;
+                if (needClouds) {
+                    this.generateOptimizedCloudSection();
+                }
+            }
+            
+            generateOptimizedCloudSection() {
+                // Find the furthest cloud to start from there seamlessly
+                const maxCloudZ = this.clouds.length > 0 ? 
+                    Math.max(...this.clouds.map(c => c.position.z)) : 
+                    this.playerPos.z + 200;
+                
+                // Start from the next position after the furthest cloud
+                const startZ = maxCloudZ + 12;
+                
+                // Generate seamless cloud section
+                for (let z = startZ; z < startZ + 60; z += 12) {
+                    for (let x = -80; x < 80; x += 12) {
+                        this.createOptimizedCloudCluster(x, z, 28, true);
+                        this.createOptimizedCloudCluster(x, z, -28, false);
+                        
+                        // Add fog spheres
+                        if (Math.random() > 0.4) {
+                            this.createOptimizedFogSphere(x, z);
+                        }
+                    }
+                }
+            }
+            
+            checkCollisions() {
+                // Optimized collision detection - only check nearby pipes
+                for (const pipe of this.pipes) {
+                    const distance = Math.abs(pipe.position.z - this.playerPos.z);
+                    if (distance < 4.5) {
+                        const { gapCenter, halfGap } = pipe.userData;
+                        const playerY = this.playerPos.y;
+                        
+                        if (playerY > gapCenter + halfGap - 1.5 || playerY < gapCenter - halfGap + 1.5) {
+                            this.gameOver();
+                            return;
+                        }
+                    }
+                }
+            }
+            
+            gameOver() {
+                this.gameRunning = false;
+                
+                if (this.score > this.highScore) {
+                    this.highScore = this.score;
+                    document.getElementById('highScore').textContent = this.highScore;
+                }
+                
+                document.getElementById('gameOver').style.display = 'block';
+            }
+            
+            restart() {
+                this.reset();
+                this.init();
+            }
+            
+            onWindowResize() {
+                this.camera.aspect = window.innerWidth / window.innerHeight;
+                this.camera.updateProjectionMatrix();
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+            }
+            
+            gameLoop() {
+                this.update();
+                this.renderer.render(this.scene, this.camera);
+                requestAnimationFrame(() => this.gameLoop());
+            }
+            
+            // Clean up resources when needed
+            dispose() {
+                // Dispose shared geometries
+                Object.values(this.sharedGeometries).forEach(geo => geo.dispose());
+                
+                // Dispose shared materials
+                Object.values(this.sharedMaterials).forEach(mat => {
+                    if (Array.isArray(mat)) {
+                        mat.forEach(m => m.dispose());
+                    } else {
+                        mat.dispose();
+                    }
+                });
+                
+                // Clean up renderer
+                this.renderer.dispose();
+            }
+        }
+        
+        // Start the game
+        const game = new FlappyBird3D();
+        
+        // Clean up on page unload
+        window.addEventListener('beforeunload', () => {
+            if (game && game.dispose) {
+                game.dispose();
+            }
+        });
+    </script>
+</body>
+</html>
